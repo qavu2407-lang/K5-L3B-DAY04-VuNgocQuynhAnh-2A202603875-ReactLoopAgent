@@ -26,11 +26,14 @@ def run_agent(question, provider, tools, max_steps=6):
     ]
     trace, usage = [], []
     source_urls = set()  # URL từ các get_incident_details thành công
+    # Bonus: dùng schemas/system prompt riêng của bộ tools nếu có; bài chính giữ mặc định.
+    schemas = getattr(tools, 'schemas', SCHEMAS)
+    messages[0]['content'] = getattr(tools, 'system_prompt', SYSTEM_PROMPT)
 
     # Gọi model tối đa max_steps lần; lưu assistant message vào messages.
     for step in range(1, max_steps + 1):
         try:
-            resp = provider.complete(messages, SCHEMAS)
+            resp = provider.complete(messages, schemas)
         except Exception as exc:
             trace.append({'event': 'provider_error', 'step': step, 'error': str(exc)})
             return {'status': 'error', 'answer': '', 'trace': trace, 'usage': usage, 'error': str(exc)}
