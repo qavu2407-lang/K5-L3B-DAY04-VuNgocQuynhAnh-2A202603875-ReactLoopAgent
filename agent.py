@@ -20,6 +20,16 @@ Quy trình điều tra:
    /incidents/<id>) mà câu hỏi yêu cầu theo dõi, gọi get_incident_details cho incident đó ở bước sau.
 4. Không mô tả nội dung của incident hay trang mà bạn chưa đọc bằng tool.'''
 
+# Bonus: ghép thêm vào system prompt của bộ tools bonus (không sửa bonus/tools.py).
+BONUS_RULES = '''
+
+Quy trình bắt buộc:
+1. Nếu tool trả RATE_LIMITED với retriable=true, gọi lại đúng tool đó ở bước sau
+   (tối đa 3 lần) trước khi kết luận không kiểm tra được.
+2. Khi câu hỏi hỏi về incident (mới nhất, timeline, phạm vi, so sánh), gọi get_incident_details
+   cho incident đó và dẫn URL incident lấy từ kết quả, không chỉ trang chủ status.
+3. Chỉ đưa URL xuất hiện trong kết quả tool; không tự tạo URL cho dịch vụ không có tool.'''
+
 
 def run_agent(question, provider, tools, max_steps=6):
     """Trả dict: status, answer, trace, usage. Contract chi tiết trong GUIDE.md."""
@@ -33,7 +43,8 @@ def run_agent(question, provider, tools, max_steps=6):
     rate_limited = {}    # (tool, provider) -> số lần nhận RATE_LIMITED
     # Bonus: dùng schemas/system prompt riêng của bộ tools nếu có; bài chính giữ mặc định.
     schemas = getattr(tools, 'schemas', SCHEMAS)
-    messages[0]['content'] = getattr(tools, 'system_prompt', SYSTEM_PROMPT)
+    bonus_prompt = getattr(tools, 'system_prompt', None)
+    messages[0]['content'] = bonus_prompt + BONUS_RULES if bonus_prompt else SYSTEM_PROMPT
 
     # Gọi model tối đa max_steps lần; lưu assistant message vào messages.
     for step in range(1, max_steps + 1):
