@@ -100,3 +100,28 @@ Số token lấy từ `result.usage` (agent) và `grade.judge_usage` (judge) c�
 - **Snapshot:** dữ liệu ngày 09/11/2026, chỉ 50 incident gần nhất mỗi provider; không phản ánh hiện tại, không tìm thấy không chứng minh không có incident.
 - **Mỗi phiên bản chỉ chạy một lần:** điểm tổng tăng 2.9, nhưng chỉ riêng H7 với cùng một câu trả lời mà judge đã chấm lệch nhau 25 điểm, nên con số này chưa đủ để nói agent thật sự tốt hơn. Điều tôi tin hơn là agent đã làm khác đi trong trace: H2 đã gọi thêm `get_status`, H6 đã mở tiếp incident được liên kết.
 - **Kiểm tra nguồn:** chỉ xác nhận có ít nhất một URL đã quan sát, không chứng minh mọi khẳng định đều có nguồn.
+
+## Bonus
+
+Cấu hình cả hai lần: `gpt-4.1-mini` cho agent và judge, `max_steps` 16, dataset `bonus`.
+
+| | `eval_bonus.json` | `eval_bonus_after.json` |
+|---|---:|---:|
+| Điểm | 88.3 (13.24/15) | **94.5 (14.17/15)** |
+| Chi phí agent / judge | $0.0178 / $0.0127 | $0.0193 / $0.0120 |
+
+**Đã thay đổi trong `agent.py`:**
+1. Dùng `tools.schemas` và `tools.system_prompt` nếu bộ tools có; bài chính vẫn dùng mặc định.
+2. Giới hạn retry trong loop: tối đa 3 lần nhận 429 cho cùng tool/provider. Lần thứ 4 không gọi tool mà ghi `retry_blocked` và báo `RETRY_LIMIT_REACHED` cho model. Đọc `Retry-After`: chỉ chờ nếu ≤ 5 giây, dài hơn thì bảo model không retry.
+3. (Lần 2) Thêm 3 luật vào prompt bonus: retry khi gặp 429, đọc `get_incident_details` khi hỏi về incident, chỉ dẫn URL có trong kết quả tool.
+
+**Retry:** B3 bị 429 một lần, thử lại và thành công. B4 bị 429 liên tục, model gọi Vercel 3 lần rồi **vẫn cố gọi lần 4**; loop chặn lại (`retry_blocked`), nên không vượt giới hạn. Model không tự dừng, nên giới hạn phải nằm trong code chứ không chỉ trong prompt.
+
+**Pagination:** B2 đạt 100 cả hai lần. Agent đọc trang đầu rồi gọi tiếp với `offset` (3 ở lần 1, 2 ở lần 2) để tới update nhắc lỗi upstream GitHub.
+
+**Context:** B6 có 160 mục nhiễu. Lần 1 agent không bị nhiễu nhưng trả lời chỉ từ tên incident (50 điểm, thiếu `get_incident_details`). Sau luật 2, agent đọc chi tiết cả hai incident (100 điểm).
+
+**Còn lại:**
+- **B10 vẫn 50:** agent gọi 5 tool trong cùng một bước, Vercel bị 429, rồi trả lời luôn mà không retry dù prompt đã dặn. Giống H1 ở bài chính: prompt không đủ để bắt model làm thêm bước. Cách sửa có thể là kiểm tra trong loop (không nhận câu trả lời khi còn tool 429 chưa retry), chưa làm.
+- Judge lại chấm cao câu trả lời thiếu bước: B6 lần 1 (100) và B10 (88–90) chỉ bị kiểm tra bằng code giới hạn ở 50.
+- Mỗi phiên bản chỉ chạy một lần; 429 và lỗi định dạng là giả lập, chưa thử với rate limit thật.
