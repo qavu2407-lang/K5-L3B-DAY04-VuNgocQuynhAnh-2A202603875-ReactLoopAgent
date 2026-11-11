@@ -1,6 +1,10 @@
 """Bài tập chính: agent loop. Xem GUIDE.md."""
 import json
+import time
 from status_tools import SCHEMAS
+
+MAX_RATE_LIMIT_RETRIES = 3   # bonus: tối đa 3 lần nhận 429 cho cùng tool/provider
+MAX_RETRY_WAIT_SECONDS = 5   # chỉ chờ Retry-After ngắn trong budget
 
 SYSTEM_PROMPT = '''Bạn là trợ lý điều tra trạng thái GitHub và Cloudflare.
 Dùng tools trước khi khẳng định về trạng thái. Phân biệt incident hiện tại và lịch sử,
@@ -26,6 +30,7 @@ def run_agent(question, provider, tools, max_steps=6):
     ]
     trace, usage = [], []
     source_urls = set()  # URL từ các get_incident_details thành công
+    rate_limited = {}    # (tool, provider) -> số lần nhận RATE_LIMITED
     # Bonus: dùng schemas/system prompt riêng của bộ tools nếu có; bài chính giữ mặc định.
     schemas = getattr(tools, 'schemas', SCHEMAS)
     messages[0]['content'] = getattr(tools, 'system_prompt', SYSTEM_PROMPT)
@@ -63,10 +68,30 @@ def run_agent(question, provider, tools, max_steps=6):
         for call in resp['calls']:
             try:
                 args = json.loads(call['arguments'] or '{}')
-                result = tools.execute(call['name'], args)
             except json.JSONDecodeError:
                 args = call['arguments']
                 result = {'ok': False, 'error': 'INVALID_ARGUMENTS', 'message': 'arguments is not valid JSON'}
+            else:
+                key = (call['name'], args.get('provider') if isinstance(args, dict) else None)
+                if rate_limited.get(key, 0) >= MAX_RATE_LIMIT_RETRIES:
+                    # Không gọi tool nữa: ghi event riêng vì tool không thực sự chạy.
+                    trace.append({'event': 'retry_blocked', 'step': step, 'name': call['name'], 'arguments': args})
+                    messages.append({'role': 'tool', 'tool_call_id': call['id'], 'content': json.dumps(
+                        {'ok': False, 'error': 'RETRY_LIMIT_REACHED',
+                         'message': f'Đã bị rate limit {MAX_RATE_LIMIT_RETRIES} lần; dừng thử lại và báo phần không kiểm tra được.'},
+                        ensure_ascii=False)})
+                    continue
+                result = tools.execute(call['name'], args)
+                if result.get('error') == 'RATE_LIMITED':
+                    rate_limited[key] = rate_limited.get(key, 0) + 1
+                    try:
+                        wait = float(result.get('retry_after_seconds') or result.get('retry_after') or 0)
+                    except (TypeError, ValueError):  # Retry-After dạng HTTP-date: coi như quá dài
+                        wait = float('inf')
+                    if wait <= MAX_RETRY_WAIT_SECONDS:
+                        time.sleep(wait)
+                    else:
+                        result['hint'] = 'Retry-After quá dài so với budget; không retry, báo phần chưa kiểm tra.'
             if call['name'] == 'get_incident_details' and result.get('ok') and result.get('url'):
                 source_urls.add(result['url'])
             trace.append({'event': 'tool', 'step': step, 'name': call['name'],
